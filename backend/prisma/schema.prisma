@@ -1,0 +1,156 @@
+// ================================================================
+// Prisma Schema - HSE & Fatigue Management System
+// Default provider: SQLite (gampang jalan lokal, zero-config).
+// Untuk PRODUCTION, ganti provider ke "postgresql" dan isi DATABASE_URL
+// di .env dengan connection string PostgreSQL kamu. Struktur model
+// TIDAK perlu berubah saat pindah provider.
+// ================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite" // ganti ke "postgresql" saat production
+  url      = env("DATABASE_URL")
+}
+
+// Catatan: SQLite tidak mendukung native enum di Prisma, jadi Role & FitStatus
+// disimpan sebagai String dengan nilai tetap yang divalidasi di kode aplikasi:
+//   Role       -> "EMPLOYEE" | "SUPERVISOR" | "HSE_OFFICER" | "ADMIN"
+//   FitStatus  -> "FIT" | "CONDITIONAL" | "NOT_FIT"
+// Kalau nanti pindah ke PostgreSQL/MySQL, boleh diubah kembali jadi enum asli
+// untuk validasi di level database.
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  password     String // hashed (bcrypt)
+  position     String? // jabatan
+  department   String? // departemen
+  role         String   @default("EMPLOYEE")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  fitToWorkEntries FitToWork[] @relation("SubmittedBy")
+  validatedEntries FitToWork[] @relation("ValidatedBy")
+
+  take5Entries       Take5[]
+  hazardReports      HazardReport[]      @relation("ReportedBy")
+  picHazardReports   HazardReport[]      @relation("PIC")
+  ptoEntries         PTO[]
+  inspections        Inspection[]
+}
+
+// ---- Modul 2: Fit To Work ----
+model FitToWork {
+  id                  Int       @id @default(autoincrement())
+  userId              Int
+  user                User      @relation("SubmittedBy", fields: [userId], references: [id])
+
+  date                DateTime // tanggal laporan
+  sleepTime           DateTime // jam tidur (datetime lengkap agar bisa lintas hari)
+  wakeTime            DateTime // jam bangun
+  sleepDurationHours  Float // dihitung otomatis di backend: (wakeTime - sleepTime)
+
+  // Kuesioner kesehatan, disimpan sbg JSON string agar fleksibel
+  // contoh: {"feelingWell":true,"onMedication":false,"consumedAlcohol":false,"stressLevel":"low"}
+  healthQuestionnaire String
+
+  fitStatus           String    @default("FIT") // "FIT" | "CONDITIONAL" | "NOT_FIT" — dihitung otomatis dari durasi tidur + kuesioner
+  notes                String?
+
+  validatedById        Int?
+  validatedBy          User?     @relation("ValidatedBy", fields: [validatedById], references: [id])
+  validatedAt          DateTime?
+
+  createdAt            DateTime  @default(now())
+
+  @@index([userId, date])
+}
+
+// ---- Modul 3: Take 5 (Pre-Task Assessment) ----
+model Take5 {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  user           User     @relation(fields: [userId], references: [id])
+
+  location       String // lokasi kerja
+  jobType        String // jenis pekerjaan
+  date           DateTime @default(now())
+
+  // Jawaban asesmen risiko, disimpan sbg JSON string, contoh:
+  // {"hasEnergySource":true,"hasMovingParts":false,"workingAtHeight":false,
+  //  "confinedSpace":false,"weatherHazard":false,"properPPE":true,"feelingFit":true}
+  riskAnswers    String
+
+  recommendation String // "PROCEED" | "STOP" — dihitung otomatis dari riskAnswers
+  notes          String?
+
+  createdAt      DateTime @default(now())
+
+  @@index([userId, date])
+}
+
+// ---- Modul 4 & 5: Hazard Report (sumber data Tasklist & Monitoring) ----
+model HazardReport {
+  id           Int       @id @default(autoincrement())
+  reporterId   Int
+  reporter     User      @relation("ReportedBy", fields: [reporterId], references: [id])
+
+  location     String // step 1: lokasi
+  category     String // "UNSAFE_ACTION" | "UNSAFE_CONDITION" | "NEAR_MISS"
+  description  String // step 2: detail temuan
+  severity     String    @default("LOW") // "LOW" | "MEDIUM" | "HIGH"
+
+  picId        Int? // step 3: PIC (person in charge)
+  pic          User?     @relation("PIC", fields: [picId], references: [id])
+  dueDate      DateTime?
+
+  status       String    @default("TO_DO") // "TO_DO" | "MONITORING" | "DONE"
+
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status])
+}
+
+// ---- Modul 6: PTO (Planned Task Observation) ----
+model PTO {
+  id                  Int      @id @default(autoincrement())
+  observerId          Int
+  observer            User     @relation(fields: [observerId], references: [id])
+
+  department          String // prosedur/departemen yang diobservasi
+  procedureRef        String // nama tugas/prosedur yang diobservasi
+  observationDate     DateTime @default(now())
+
+  positiveFindings    String? // hal yang sudah sesuai
+  improvementFindings String? // hal yang perlu diperbaiki
+  actionTaken         String?
+
+  createdAt           DateTime @default(now())
+}
+
+// ---- Modul 7: Modul Inspeksi (checklist digital) ----
+model Inspection {
+  id             Int      @id @default(autoincrement())
+  inspectorId    Int
+  inspector      User     @relation(fields: [inspectorId], references: [id])
+
+  type           String // "FIVE_R" | "POWER_TOOLS" | "LIFTING_GEAR" | "PARKING_AREA" | "OPERATIONAL_VEHICLE"
+  area           String // lokasi/objek yang diinspeksi
+  date           DateTime @default(now())
+
+  // Array checklist item, disimpan sbg JSON string, contoh:
+  // [{"item":"Lantai bersih dari tumpahan","result":"OK","note":""}, ...]
+  checklistItems String
+
+  overallResult  String // "PASS" | "FAIL" — dihitung otomatis (FAIL kalau ada item NOT_OK)
+  notes          String?
+
+  createdAt      DateTime @default(now())
+
+  @@index([type, date])
+}
